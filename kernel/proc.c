@@ -272,6 +272,8 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  uvmcopy_not_physical(p->pagetable, p->kernelpt, 0, p->sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -294,11 +296,23 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if(PGROUNDDOWN(sz + n) >= PLIC)
+      return -1;
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    uvmcopy_not_physical(p->pagetable, p->kernelpt, p->sz, sz);
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+	
+	// 缩小 kernel_pagetable 的相应映射
+    int newsz = p->sz + n;
+    if(PGROUNDDOWN(newsz) < PGROUNDUP(p->sz))
+    {
+      int npages = (PGROUNDUP(p->sz) - PGROUNDUP(newsz)) / PGSIZE;
+      uvmunmap(p->kernelpt, PGROUNDUP(newsz), npages, 0);
+    }
+
   }
   p->sz = sz;
   return 0;
@@ -319,7 +333,7 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0 || uvmcopy_not_physical(np->pagetable, np->kernelpt, 0, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
